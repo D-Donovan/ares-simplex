@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="robots" content="noindex">
+<title>ARES simplex test - who can I hear?</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="ares-simplex.css">
+</head><body>
+<div id="printhead"></div>
+<div id="side">
+ <h1 class="noprint">Simplex test: who can I hear?</h1>
+
+ <div class="noprint">
+  <h2>1. My station</h2>
+  <input id="me" autocomplete="off" style="text-transform:uppercase" placeholder="your call-SSID (W0ABC-7), or grid / lat,lon">
+  <input id="meCall" autocomplete="off" style="text-transform:uppercase;display:none" placeholder="your callsign">
+  <button id="meBtn">Set my station</button>
+  <div class="small" id="meMsg">Kept only in this browser.</div>
+
+  <h2>2. Station I hear on simplex</h2>
+  <input id="call" autocomplete="off" style="text-transform:uppercase" placeholder="Callsign, e.g. W0XYZ-7">
+  <select id="how"><option value="good">Copy well</option><option value="weak">Weak / partial</option></select>
+  <input id="freq" placeholder="Frequency (optional) 146.520">
+  <div id="manual" style="display:none"><label>No APRS position - enter grid or lat,lon</label><input id="loc" placeholder="EN34ra or 44.02,-92.50"></div>
+  <button class="pri" id="add">Add to my map &amp; clear</button>
+  <div class="small" id="msg"></div>
+ </div>
+
+ <h2>Stations I hear <span id="count" class="small"></span></h2>
+ <div class="small" id="sum"></div>
+ <table><tbody id="tbody"></tbody></table>
+ <div class="small" style="margin-top:8px"><span class="dot" style="background:#1fa34a"></span>copy well <span class="dot" style="background:#e6b800"></span>weak</div>
+ <button id="printBtn" class="noprint">Print my map</button>
+ <button id="wipe" class="noprint">Clear my list</button>
+ <div class="small noprint">To keep the map colors, tick "Background graphics" in the print dialog, or choose Save as PDF.</div>
+ <div class="small" style="margin-top:10px">Position data courtesy of <a href="https://aprs.fi/" target="_blank" rel="noopener">aprs.fi</a>.</div>
+</div>
+<div id="map"></div>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+const API_URL = 'https://www.tsmrockets.com/phpBB2/ares/api.php';   // the GitHub copy points this at the full address of api.php
+const KEY = 'ares-heard-mine-v1', COL = { good: '#1fa34a', weak: '#e6b800' }, LAB = { good: 'Copy well', weak: 'Weak / partial' };
+const $ = id => document.getElementById(id);
+let ME = JSON.parse(localStorage.getItem('ares-me-v1') || 'null'), LOG = JSON.parse(localStorage.getItem(KEY) || '[]'), RING = null, map, layer;
+function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+function parseLoc(t) {
+  t = t.trim(); let m = t.match(/^(-?\d+(\.\d+)?)\s*[, ]\s*(-?\d+(\.\d+)?)$/);
+  if (m) return { lat: +m[1], lon: +m[3] };
+  m = t.match(/^([A-R]{2})(\d\d)([A-X]{2})?$/i); if (!m) return null;
+  const g = t.toUpperCase(), A = c => c.charCodeAt(0) - 65;
+  let lon = A(g[0]) * 20 - 180 + +g[2] * 2, lat = A(g[1]) * 10 - 90 + +g[3];
+  if (g.length >= 6) { lon += A(g[4]) / 12 + 1 / 24; lat += A(g[5]) / 24 + 1 / 48; } else { lon += 1; lat += .5; }
+  return { lat, lon };
+}
+function distBear(a, b) {   // miles and compass direction from a to b
+  const R = 3958.8, r = x => x * Math.PI / 180, dLat = r(b.lat - a.lat), dLon = r(b.lon - a.lon);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(r(a.lat)) * Math.cos(r(b.lat)) * Math.sin(dLon / 2) ** 2;
+  const y = Math.sin(r(b.lon - a.lon)) * Math.cos(r(b.lat)), x = Math.cos(r(a.lat)) * Math.sin(r(b.lat)) - Math.sin(r(a.lat)) * Math.cos(r(b.lat)) * Math.cos(r(b.lon - a.lon));
+  const deg = (Math.atan2(y, x) * 180 / Math.PI + 360) % 360;
+  return { mi: 2 * R * Math.asin(Math.sqrt(h)), dir: ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'][Math.round(deg / 45) % 8] };
+}
+async function lookup(call) {
+  try { const r = await fetch(API_URL + '?a=lookup&call=' + encodeURIComponent(call)); return await r.json(); } catch (e) { return { error: 'Cannot reach the server.' }; }
+}
+function badge(text, bg) { return L.divIcon({ className: '', html: '<div style="background:' + bg + ';color:#fff;border-radius:4px;padding:1px 6px;font-weight:bold;border:2px solid #fff;box-shadow:0 0 3px #000;white-space:nowrap">' + esc(text) + '</div>', iconAnchor: [20, 10] }); }
+function rows() { return LOG.map(e => Object.assign({}, e, ME ? distBear(ME, e) : { mi: 0, dir: '' })).sort((a, b) => a.mi - b.mi); }
+function summary() {
+  if (!ME) return 'Set your station first.';
+  const r = rows(); if (!r.length) return 'No stations logged yet.';
+  const far = r[r.length - 1]; return r.length + ' station' + (r.length > 1 ? 's' : '') + ' heard. Farthest: ' + far.call + ', ' + far.mi.toFixed(1) + ' mi ' + far.dir + '.';
+}
+function draw() {
+  if (!map) return; layer.clearLayers();
+  if (RING) L.polygon(RING, { color: '#1f3f66', weight: 3, fillColor: '#1f3f66', fillOpacity: .04, interactive: false }).addTo(layer);
+  LOG.forEach(e => {
+    const d = ME ? distBear(ME, e) : null;
+    if (ME) L.polyline([[ME.lat, ME.lon], [e.lat, e.lon]], { color: COL[e.how], weight: 2, opacity: .7, dashArray: e.how === 'weak' ? '5 6' : null, interactive: false }).addTo(layer);
+    L.circleMarker([e.lat, e.lon], { radius: 10, color: '#222', weight: 2, fillColor: COL[e.how], fillOpacity: .95 }).addTo(layer)
+      .bindPopup('<b>' + esc(e.call) + '</b><br>' + LAB[e.how] + (e.freq ? '<br>' + esc(e.freq) + ' MHz' : '') + (d ? '<br>' + d.mi.toFixed(1) + ' mi ' + d.dir + ' of you' : '') + '<br><small>' + esc(e.src) + '</small>')
+      .bindTooltip(e.call + (d ? ' ' + d.mi.toFixed(1) + ' mi' : ''), { permanent: true, direction: 'right', offset: [10, 0], className: 'lbl' });
+  });
+  if (ME) L.marker([ME.lat, ME.lon], { icon: badge('YOU ' + ME.call, '#7a2d91'), zIndexOffset: 1000 }).addTo(layer);
+}
+function renderList() {
+  $('count').textContent = '(' + LOG.length + ')'; $('sum').textContent = summary();
+  $('tbody').innerHTML = rows().map(e => '<tr><td><i class="dot" style="background:' + COL[e.how] + '"></i><b>' + esc(e.call) + '</b></td><td>' + (ME ? e.mi.toFixed(1) + ' mi ' + e.dir : '') + '</td><td>' + LAB[e.how] + (e.freq ? ' ' + esc(e.freq) : '') + '</td><td class="noprint"><button data-del="' + esc(e.call) + '" style="width:auto;padding:1px 6px">x</button></td></tr>').join('') || '<tr><td class="small">Nothing logged yet.</td></tr>';
+}
+function persist() { localStorage.setItem(KEY, JSON.stringify(LOG)); renderList(); draw(); }
+function fitAll() {
+  if (!map) return; const pts = LOG.map(e => [e.lat, e.lon]); if (ME) pts.push([ME.lat, ME.lon]);
+  if (pts.length > 1) map.fitBounds(pts, { padding: [50, 50], maxZoom: 13, animate: false }); else if (ME) map.setView([ME.lat, ME.lon], 11);
+}
+async function setMe() {
+  const t = $('me').value.trim().toUpperCase(); if (!t) return; const p = parseLoc(t);
+  if (p) {
+    const mc = $('meCall').value.trim().toUpperCase();
+    if (!mc) { $('meCall').style.display = 'block'; $('meMsg').textContent = 'Position set. Also enter your callsign, then press Set again.'; ME = { call: 'ME', lat: p.lat, lon: p.lon, src: 'manual' }; draw(); fitAll(); renderList(); return; }
+    ME = { call: mc, lat: p.lat, lon: p.lon, src: 'manual' };
+  } else {
+    $('meMsg').textContent = 'Searching aprs.fi ...'; const r = await lookup(t);
+    if (!r.matches) { $('meMsg').textContent = (r.error || 'Not found.') + ' Enter your grid or lat,lon instead.'; return; }
+    const m = r.matches[0]; ME = { call: m.call, lat: m.lat, lon: m.lon, src: 'aprs.fi, ' + m.age_min + ' min old' };
+  }
+  localStorage.setItem('ares-me-v1', JSON.stringify(ME)); $('meMsg').textContent = 'Set: ' + ME.call + ' (' + ME.src + '). Kept only in this browser.';
+  $('me').value = ''; $('meCall').value = ''; $('meCall').style.display = 'none'; renderList(); draw(); fitAll();
+}
+async function add() {
+  const call = $('call').value.trim().toUpperCase(); if (!call) { $('msg').textContent = 'Enter a callsign.'; return; }
+  if (!ME) { $('msg').textContent = 'Set your station first (step 1).'; return; }
+  let pos, src, name = call;
+  const typed = $('loc').value ? parseLoc($('loc').value) : null;
+  if (typed) { pos = typed; src = 'manual entry'; }
+  else {
+    $('msg').textContent = 'Searching aprs.fi for ' + call + ' ...'; const r = await lookup(call);
+    if (!r.matches) { $('manual').style.display = 'block'; $('msg').textContent = (r.error || 'Not found.') + ' Enter a grid or lat,lon, then Add again.'; return; }
+    const m = r.matches[0]; pos = { lat: m.lat, lon: m.lon }; name = m.call; src = 'aprs.fi, ' + m.age_min + ' min old';
+  }
+  LOG = LOG.filter(e => e.call !== name);
+  LOG.push({ call: name, how: $('how').value, freq: $('freq').value.trim(), lat: pos.lat, lon: pos.lon, src, at: new Date().toISOString() });
+  persist(); fitAll(); $('msg').textContent = 'Added ' + name + ' (' + src + ').';
+  $('call').value = $('freq').value = $('loc').value = ''; $('how').value = 'good'; $('manual').style.display = 'none'; $('call').focus();
+}
+function fillPrintHead() {
+  $('printhead').innerHTML = '<h1>Simplex test: who I can hear</h1><div>' + (ME ? 'My station: <b>' + esc(ME.call) + '</b> - ' : '') + 'printed ' + esc(new Date().toLocaleString()) + '</div><div><b>' + esc(summary()) + '</b></div>';
+}
+window.addEventListener('beforeprint', () => { fillPrintHead(); if (map) { map.invalidateSize(); fitAll(); } });
+window.addEventListener('afterprint', () => { if (map) map.invalidateSize(); });
+if (typeof L !== 'undefined') {
+  map = L.map('map').setView(ME ? [ME.lat, ME.lon] : [44.0121, -92.4802], ME ? 11 : 10);
+  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 18, attribution: '&copy; OpenStreetMap contributors' }).addTo(map);
+  layer = L.layerGroup().addTo(map);
+}
+$('meBtn').onclick = setMe; $('me').addEventListener('keydown', e => { if (e.key === 'Enter') setMe(); });
+$('add').onclick = add; $('call').addEventListener('keydown', e => { if (e.key === 'Enter') add(); }); $('freq').addEventListener('keydown', e => { if (e.key === 'Enter') add(); });
+$('call').addEventListener('input', () => { $('manual').style.display = 'none'; });
+$('tbody').onclick = e => { const c = e.target.dataset.del; if (c) { LOG = LOG.filter(x => x.call !== c); persist(); } };
+$('printBtn').onclick = () => window.print();
+$('wipe').onclick = () => { if (confirm('Clear your list of stations heard?')) { LOG = []; persist(); } };
+fetch('olmsted-county.json').then(r => r.json()).then(r => { RING = r; draw(); }).catch(() => {});
+renderList(); draw();
+</script></body></html>
