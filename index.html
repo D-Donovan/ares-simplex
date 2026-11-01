@@ -85,8 +85,9 @@ function renderList() {
   $('tbody').innerHTML = rows().map(e => '<tr><td><i class="dot" style="background:' + COL[e.how] + '"></i><b>' + esc(e.call) + '</b></td><td>' + (ME ? e.mi.toFixed(1) + ' mi ' + e.dir : '') + '</td><td>' + LAB[e.how] + (e.freq ? ' ' + esc(e.freq) : '') + '</td><td class="noprint"><button data-del="' + esc(e.call) + '" style="width:auto;padding:1px 6px">x</button></td></tr>').join('') || '<tr><td class="small">Nothing logged yet.</td></tr>';
 }
 function persist() { localStorage.setItem(KEY, JSON.stringify(LOG)); renderList(); draw(); }
-function fitAll() {
+function fitAll(withCounty) {   // withCounty (used for printing) also fits the whole Olmsted County outline
   if (!map) return; const pts = LOG.map(e => [e.lat, e.lon]); if (ME) pts.push([ME.lat, ME.lon]);
+  if (withCounty && RING) { map.fitBounds(RING.concat(pts), { padding: [30, 30], animate: false }); return; }
   if (pts.length > 1) map.fitBounds(pts, { padding: [50, 50], maxZoom: 13, animate: false }); else if (ME) map.setView([ME.lat, ME.lon], 11);
 }
 async function setMe() {
@@ -122,8 +123,8 @@ async function add() {
 function fillPrintHead() {
   $('printhead').innerHTML = '<h1>Simplex test: who I can hear</h1><div>' + (ME ? 'My station: <b>' + esc(ME.call) + '</b> - ' : '') + 'printed ' + esc(new Date().toLocaleString()) + '</div><div><b>' + esc(summary()) + '</b></div>';
 }
-window.addEventListener('beforeprint', () => { fillPrintHead(); if (map) { map.invalidateSize(); fitAll(); } });
-window.addEventListener('afterprint', () => { if (map) map.invalidateSize(); });
+window.addEventListener('beforeprint', () => { fillPrintHead(); if (map) { map.invalidateSize(); fitAll(true); } });
+window.addEventListener('afterprint', () => { if (map) { map.invalidateSize(); fitAll(); } });
 if (typeof L !== 'undefined') {
   map = L.map('map').setView(ME ? [ME.lat, ME.lon] : [44.0121, -92.4802], ME ? 11 : 10);
   L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 18, attribution: '&copy; OpenStreetMap contributors' }).addTo(map);
