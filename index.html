@@ -20,7 +20,8 @@
   <input id="call" autocomplete="off" style="text-transform:uppercase" placeholder="Callsign, e.g. W0XYZ-7">
   <select id="how"><option value="good">Copy well</option><option value="weak">Weak / partial</option></select>
   <input id="freq" placeholder="Frequency (optional) 146.520">
-  <div id="manual" style="display:none"><label>No APRS position - enter grid or lat,lon</label><input id="loc" placeholder="EN34ra or 44.02,-92.50"></div>
+  <label id="locLabel">Grid or lat,lon (optional - only if the station has no APRS)</label>
+  <input id="loc" autocomplete="off" placeholder="EN34ra  or  EN34ra85  or  44.02,-92.50">
   <button class="pri" id="add">Add to my map &amp; clear</button>
   <div class="small" id="msg"></div>
  </div>
@@ -28,7 +29,7 @@
  <h2>Stations I hear <span id="count" class="small"></span></h2>
  <div class="small" id="sum"></div>
  <table><tbody id="tbody"></tbody></table>
- <div class="small" style="margin-top:8px"><span class="dot" style="background:#1fa34a"></span>copy well <span class="dot" style="background:#e6b800"></span>weak</div>
+ <div class="small" style="margin-top:8px"><span class="dot" style="background:#1fa34a"></span>copy well <span class="dot" style="background:#e6b800"></span>weak <span class="dot" style="background:#fff;border:2px dashed #555"></span>approximate (grid)</div>
  <button id="printBtn" class="noprint">Print my map</button>
  <button id="wipe" class="noprint">Clear my list</button>
  <div class="small noprint">To keep the map colors, tick "Background graphics" in the print dialog, or choose Save as PDF.</div>
@@ -45,11 +46,13 @@ function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, c => ({ '
 function parseLoc(t) {
   t = t.trim(); let m = t.match(/^(-?\d+(\.\d+)?)\s*[, ]\s*(-?\d+(\.\d+)?)$/);
   if (m) return { lat: +m[1], lon: +m[3] };
-  m = t.match(/^([A-R]{2})(\d\d)([A-X]{2})?$/i); if (!m) return null;
-  const g = t.toUpperCase(), A = c => c.charCodeAt(0) - 65;
+  m = t.match(/^([A-R]{2})(\d\d)(?:([A-X]{2})(\d\d)?)?$/i); if (!m) return null;
+  const g = t.toUpperCase(), A = c => c.charCodeAt(0) - 65;   // 4, 6 or 8 character Maidenhead grid -> centre of the square
   let lon = A(g[0]) * 20 - 180 + +g[2] * 2, lat = A(g[1]) * 10 - 90 + +g[3];
-  if (g.length >= 6) { lon += A(g[4]) / 12 + 1 / 24; lat += A(g[5]) / 24 + 1 / 48; } else { lon += 1; lat += .5; }
-  return { lat, lon };
+  if (g.length === 8) { lon += A(g[4]) / 12 + +g[6] / 120 + 1 / 240; lat += A(g[5]) / 24 + +g[7] / 240 + 1 / 480; }
+  else if (g.length === 6) { lon += A(g[4]) / 12 + 1 / 24; lat += A(g[5]) / 24 + 1 / 48; }
+  else { lon += 1; lat += .5; }
+  return { lat, lon, grid: g };
 }
 function distBear(a, b) {   // miles and compass direction from a to b
   const R = 3958.8, r = x => x * Math.PI / 180, dLat = r(b.lat - a.lat), dLon = r(b.lon - a.lon);
@@ -74,7 +77,7 @@ function draw() {
   LOG.forEach(e => {
     const d = ME ? distBear(ME, e) : null;
     if (ME) L.polyline([[ME.lat, ME.lon], [e.lat, e.lon]], { color: COL[e.how], weight: 2, opacity: .7, dashArray: e.how === 'weak' ? '5 6' : null, interactive: false }).addTo(layer);
-    L.circleMarker([e.lat, e.lon], { radius: 10, color: '#222', weight: 2, fillColor: COL[e.how], fillOpacity: .95 }).addTo(layer)
+    L.circleMarker([e.lat, e.lon], { radius: 10, color: e.approx ? '#555' : '#222', weight: e.approx ? 3 : 2, dashArray: e.approx ? '3 3' : null, fillColor: COL[e.how], fillOpacity: e.approx ? .6 : .95 }).addTo(layer)
       .bindPopup('<b>' + esc(e.call) + '</b><br>' + LAB[e.how] + (e.freq ? '<br>' + esc(e.freq) + ' MHz' : '') + (d ? '<br>' + d.mi.toFixed(1) + ' mi ' + d.dir + ' of you' : '') + '<br><small>' + esc(e.src) + '</small>')
       .bindTooltip(e.call + (d ? ' ' + d.mi.toFixed(1) + ' mi' : ''), { permanent: true, direction: 'right', offset: [10, 0], className: 'lbl' });
   });
@@ -82,7 +85,7 @@ function draw() {
 }
 function renderList() {
   $('count').textContent = '(' + LOG.length + ')'; $('sum').textContent = summary();
-  $('tbody').innerHTML = rows().map(e => '<tr><td><i class="dot" style="background:' + COL[e.how] + '"></i><b>' + esc(e.call) + '</b></td><td>' + (ME ? e.mi.toFixed(1) + ' mi ' + e.dir : '') + '</td><td>' + LAB[e.how] + (e.freq ? ' ' + esc(e.freq) : '') + '</td><td class="noprint"><button data-del="' + esc(e.call) + '" style="width:auto;padding:1px 6px">x</button></td></tr>').join('') || '<tr><td class="small">Nothing logged yet.</td></tr>';
+  $('tbody').innerHTML = rows().map(e => '<tr><td><i class="dot" style="background:' + COL[e.how] + '"></i><b>' + esc(e.call) + '</b></td><td>' + (ME ? (e.approx ? '~' : '') + e.mi.toFixed(1) + ' mi ' + e.dir : '') + '</td><td>' + LAB[e.how] + (e.freq ? ' ' + esc(e.freq) : '') + '</td><td class="noprint"><button data-del="' + esc(e.call) + '" style="width:auto;padding:1px 6px">x</button></td></tr>').join('') || '<tr><td class="small">Nothing logged yet.</td></tr>';
 }
 function persist() { localStorage.setItem(KEY, JSON.stringify(LOG)); renderList(); draw(); }
 function fitAll(withCounty) {   // withCounty (used for printing) also fits the whole Olmsted County outline
@@ -108,17 +111,19 @@ async function add() {
   const call = $('call').value.trim().toUpperCase(); if (!call) { $('msg').textContent = 'Enter a callsign.'; return; }
   if (!ME) { $('msg').textContent = 'Set your station first (step 1).'; return; }
   let pos, src, name = call;
-  const typed = $('loc').value ? parseLoc($('loc').value) : null;
-  if (typed) { pos = typed; src = 'manual entry'; }
+  const typed = $('loc').value.trim() ? parseLoc($('loc').value) : null;
+  if ($('loc').value.trim() && !typed) { $('msg').textContent = 'Could not read that grid / lat,lon. Use a grid like EN34ra or EN34ra85, or 44.02,-92.50.'; return; }
+  let grid = '';
+  if (typed) { pos = typed; grid = typed.grid || ''; src = grid ? 'grid ' + grid + ' (approximate)' : 'manual lat,lon'; }
   else {
     $('msg').textContent = 'Searching aprs.fi for ' + call + ' ...'; const r = await lookup(call);
-    if (!r.matches) { $('manual').style.display = 'block'; $('msg').textContent = (r.error || 'Not found.') + ' Enter a grid or lat,lon, then Add again.'; return; }
+    if (!r.matches) { $('locLabel').style.color = '#b00'; $('loc').focus(); $('msg').textContent = (r.error || 'Not found.') + ' Type its grid (or lat,lon) in the box below, then Add again.'; return; }
     const m = r.matches[0]; pos = { lat: m.lat, lon: m.lon }; name = m.call; src = 'aprs.fi, ' + m.age_min + ' min old';
   }
   LOG = LOG.filter(e => e.call !== name);
-  LOG.push({ call: name, how: $('how').value, freq: $('freq').value.trim(), lat: pos.lat, lon: pos.lon, src, at: new Date().toISOString() });
+  LOG.push({ call: name, how: $('how').value, freq: $('freq').value.trim(), lat: pos.lat, lon: pos.lon, src, approx: !!grid, at: new Date().toISOString() });
   persist(); fitAll(); $('msg').textContent = 'Added ' + name + ' (' + src + ').';
-  $('call').value = $('freq').value = $('loc').value = ''; $('how').value = 'good'; $('manual').style.display = 'none'; $('call').focus();
+  $('call').value = $('freq').value = $('loc').value = ''; $('how').value = 'good'; $('locLabel').style.color = ''; $('call').focus();
 }
 function fillPrintHead() {
   $('printhead').innerHTML = '<h1>Simplex test: who I can hear</h1><div>' + (ME ? 'My station: <b>' + esc(ME.call) + '</b> - ' : '') + 'printed ' + esc(new Date().toLocaleString()) + '</div><div><b>' + esc(summary()) + '</b></div>';
@@ -132,7 +137,7 @@ if (typeof L !== 'undefined') {
 }
 $('meBtn').onclick = setMe; $('me').addEventListener('keydown', e => { if (e.key === 'Enter') setMe(); });
 $('add').onclick = add; $('call').addEventListener('keydown', e => { if (e.key === 'Enter') add(); }); $('freq').addEventListener('keydown', e => { if (e.key === 'Enter') add(); });
-$('call').addEventListener('input', () => { $('manual').style.display = 'none'; });
+$('call').addEventListener('input', () => { $('locLabel').style.color = ''; });
 $('tbody').onclick = e => { const c = e.target.dataset.del; if (c) { LOG = LOG.filter(x => x.call !== c); persist(); } };
 $('printBtn').onclick = () => window.print();
 $('wipe').onclick = () => { if (confirm('Clear your list of stations heard?')) { LOG = []; persist(); } };
